@@ -283,7 +283,7 @@ body::after{
     <div class="sh-net" id="s-net">$0.00</div>
     <div class="sh-meta">
       <div><div class="sh-ml">Cap</div><div class="sh-mv" id="s-cap">—</div></div>
-      <div><div class="sh-ml">Remaining</div><div class="sh-mv g" id="s-rem">—</div></div>
+      <div><div class="sh-ml">Spent</div><div class="sh-mv" id="s-spent">—</div></div>
       <div><div class="sh-ml">Broken</div><div class="sh-mv r" id="s-broken">—</div></div>
       <div><div class="sh-ml">Last Request</div><div class="sh-mv" id="s-last">—</div></div>
     </div>
@@ -375,7 +375,11 @@ function jsonpFetch(url) {
   });
 }
 
-// ── FETCH BALANCES (n8n — authoritative for status/cap/spent/remaining) ──
+// ── FETCH BALANCES (n8n — authoritative for status/cap, NOT spent) ───────
+// Cap and Commit/Regular status are Form 47 config, fine to trust as-is.
+// AmountSpent/RemainingCredit can drift from reality (e.g. a manual balance
+// edit with no corresponding logged request) — spent is recomputed from the
+// sheet's own NET SPENT total instead, see fetchSheets() below.
 async function fetchN8nBalances() {
   try {
     const res = await fetch(N8N_API_URL, { cache: 'no-store' });
@@ -387,14 +391,16 @@ async function fetchN8nBalances() {
   }
 }
 
-// ── FETCH BROKEN PARTS (CREDIT Tracker Summary tab) ───────────────
+// ── FETCH PER-TEAM NET SPEND + BROKEN PARTS (CREDIT Tracker Summary tab) ──
 // Same layout/parsing as the Budget dashboard's Summary scan — the CREDIT
-// Tracker sheet is a literal copy of the Budget sheet, broken-parts section intact.
+// Tracker sheet is a literal copy of the Budget sheet, broken-parts section
+// intact. Each team's row here mirrors that team's own sheet "NET SPENT"
+// cell — the actual logged total, independent of Form 47's cached balance.
 async function fetchSheets() {
   try {
     const base = `https://docs.google.com/spreadsheets/d/${CREDIT_SHEET_ID}/gviz/tq`;
     const rawData = await jsonpFetch(`${base}?sheet=Summary&headers=0`);
-    let brokenRows = [];
+    let brokenRows = [], netSpent = {};
     if (rawData?.table?.rows) {
       let inBrokenSection = false;
       for (const row of rawData.table.rows) {
@@ -402,7 +408,9 @@ async function fetchSheets() {
         const c0 = String(row.c[0]?.v || '').trim();
         if (/BROKEN/i.test(c0) && !TEAMS.includes(c0)) { inBrokenSection = true; continue; }
         if (inBrokenSection && c0 === 'Team') continue;
-        if (inBrokenSection && TEAMS.includes(c0)) {
+        if (!inBrokenSection && TEAMS.includes(c0)) {
+          netSpent[c0] = parseMoney(row.c[1]);
+        } else if (inBrokenSection && TEAMS.includes(c0)) {
           brokenRows.push({
             team:   c0,
             part:   String(row.c[1]?.v || ''),
@@ -415,10 +423,10 @@ async function fetchSheets() {
         }
       }
     }
-    return { brokenRows };
+    return { netSpent, brokenRows };
   } catch(e) {
     console.warn('Sheets parse error:', e);
-    return { brokenRows: [] };
+    return { netSpent: {}, brokenRows: [] };
   }
 }
 
@@ -467,9 +475,9 @@ async function fetchAllFeedStats() {
 function calc(id) {
   const live    = liveData[id]   || {};
   const broken  = brokenData[id] || [];
-  const spent   = live.amountSpent ?? 0;
+  const spent   = live.netSpent ?? 0; // from the sheet's own NET SPENT total, not Form 47's cached balance
   const cap     = live.seasonCap ?? 0;
-  const remaining = live.remainingCredit ?? 0;
+  const remaining = cap ? Math.max(0, cap - spent) : 0;
   const pct     = cap ? Math.min(100, Math.max(0, (spent/cap)*100)) : 0;
   const remPct  = cap ? remaining/cap : 1;
   const tier    = remPct < 0.15 ? 'danger' : (remPct < 0.35 ? 'warn' : '');
@@ -492,6 +500,7 @@ function rebuildCards() {
   animCount(document.getElementById('stat-commit'),  commitCount,  false);
   animCount(document.getElementById('stat-regular'), regularCount, false);
   animCount(document.getElementById('stat-low'),     lowCount,     false);
+  animCount(document.getElementById('stat-net'), all.reduce((s,t)=>s+t.remaining,0), true);
 
   function renderRow(teams, rowId, delay) {
     const container = document.getElementById(rowId);
@@ -531,9 +540,9 @@ function rebuildCards() {
       card.innerHTML = `
         <div class="badge ${badgeClass}">${t.status}</div>
         <div class="card-id">${t.id}</div>
-        <div class="card-net">${fmt(t.spent)}</div>
+        <div class="card-net">${fmt(t.remaining)}</div>
         <div class="card-rows">
-          <div class="card-row"><span class="cr-l">Remaining</span><span class="cr-v rt">${fmt(t.remaining)}</span></div>
+          <div class="card-row"><span class="cr-l">Spent</span><span class="cr-v sp">${fmt(t.spent)}</span></div>
           <div class="card-row"><span class="cr-l">Cap</span><span class="cr-v sp">${fmt(t.cap)}</span></div>
           <div class="card-row"><span class="cr-l">Requests</span><span class="cr-v rq">${t.reqs}</span></div>
           <div class="card-row"><span class="cr-l">Last</span><span class="cr-v sp" style="font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80px">${t.last}</span></div>
@@ -586,9 +595,9 @@ async function loadSide(id) {
   teamEl.style.opacity = 0;
   setTimeout(() => { teamEl.textContent = id; teamEl.style.transition='opacity .2s'; teamEl.style.opacity=1; }, 100);
 
-  animCount(document.getElementById('s-net'), t.spent, true, 700);
+  animCount(document.getElementById('s-net'), t.remaining, true, 700);
   document.getElementById('s-cap').textContent     = fmt(t.cap);
-  document.getElementById('s-rem').textContent     = fmt(t.remaining);
+  document.getElementById('s-spent').textContent   = fmt(t.spent);
   document.getElementById('s-broken').textContent  = t.brokenCost > 0 ? fmt(t.brokenCost) : '$0.00';
   document.getElementById('s-last').textContent    = t.last;
 
@@ -676,19 +685,17 @@ async function poll() {
       liveData[id] = {
         status: b.status || 'Regular',
         seasonCap: b.seasonCap || 0,
-        amountSpent: b.amountSpent || 0,
-        remainingCredit: b.remainingCredit || 0,
+        netSpent: sheetsResult.netSpent?.[id] || 0, // sheet's own running total, not Form 47's cache
         requests: feedStats[id]?.requests || 0,
         returns:  feedStats[id]?.returns  || 0,
         lastReq:  feedStats[id]?.lastReq  || '—'
       };
     }
-    animCount(document.getElementById('stat-net'), n8nResult.totals?.totalRemaining || 0, true);
     syncEl.textContent = 'Synced ' + new Date().toLocaleTimeString('en-CA',{hour12:false,hour:'2-digit',minute:'2-digit'});
   } else {
     syncEl.textContent = 'Fetch failed — using base data';
   }
-  rebuildCards();
+  rebuildCards(); // also recomputes the Total Remaining hero figure from real per-team data
 }
 
 (async () => {
