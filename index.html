@@ -141,6 +141,7 @@ body::after{
 .badge.commit{background:var(--blue-pale);color:var(--blue);}
 .badge.regular{background:var(--off);color:var(--dim);border:1px solid var(--border);}
 .card-id{font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.12em;color:var(--mid);margin-bottom:3px;}
+.rank-n{display:inline-block;min-width:22px;margin-right:4px;color:var(--dim);font-weight:700;}
 .card-nl{font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mid);margin-bottom:2px;}
 .card-net.over{color:var(--red);animation:overFlash 1s steps(1,end) infinite;}
 .sh-net.over{color:#ff6b78;animation:overFlash 1s steps(1,end) infinite;}
@@ -191,6 +192,7 @@ body::after{
 .sec-budget{background:#eef4fb;}
 .sec-onb{background:#f6f3ec;}
 .sec-head{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:12px;padding:0 6px;}
+.sub-note{flex:0 1 auto;min-width:0;margin-right:auto;margin-left:14px;}
 .sec-note{font-size:11px;color:var(--mid);flex:1;min-width:200px;}
 .sec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;}
 .mini{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.06);transition:border-color .18s,transform .15s;text-align:left;font:inherit;color:inherit;}
@@ -346,6 +348,7 @@ body::after{
 
 <div class="subbar">
   <div class="subbar-title">Team <em>Credit</em></div>
+  <div class="sec-note sub-note">Ranked by most spent</div>
   <div class="pills">
     <div class="pill bl"><div class="pill-l">Teams</div><div class="pill-v" id="stat-teams">11</div></div>
     <div class="pill bl"><div class="pill-l">Commit</div><div class="pill-v" id="stat-commit">—</div></div>
@@ -390,7 +393,7 @@ body::after{
 <section class="sec sec-budget">
   <div class="sec-head">
     <div class="subbar-title">Team <em>Budget</em></div>
-    <div class="sec-note">Parts bought on the club budget. They do not come out of team credit.</div>
+    <div class="sec-note">Parts bought on the club budget, ranked by most spent. They do not come out of team credit.</div>
     <div class="net-box"><div class="pill-l">Total Budget Spent</div><div class="pill-v" id="stat-budget">$0.00</div></div>
   </div>
   <div class="sec-grid" id="budget-grid"></div>
@@ -613,7 +616,8 @@ function calc(id) {
 
 function rebuildCards() {
   const all = TEAMS.map(id => calc(id));
-  all.sort((a,b) => a.remaining - b.remaining); // most at-risk first
+  all.sort((a,b) => b.spent - a.spent || a.id.localeCompare(b.id)); // most spent first
+  all.forEach((t, i) => { t.rank = i + 1; });
   teamOrder = all.map(t => t.id);
 
   const commitCount  = all.filter(t => t.status === 'Commit').length;
@@ -664,7 +668,7 @@ function rebuildCards() {
 
       card.innerHTML = `
         <div class="badge ${badgeClass}">${t.status}</div>
-        <div class="card-id">${t.id}</div>
+        <div class="card-id"><span class="rank-n">#${t.rank}</span>${t.id}</div>
         <div class="card-nl${t.remaining < 0 ? ' over' : ''}">${t.remaining < 0 ? 'Over Credit' : 'Credit Left'}</div>
         <div class="card-net${t.remaining < 0 ? ' over' : ''}">${fmt(t.remaining)}</div>
         <div class="card-rows">
@@ -843,8 +847,8 @@ async function pollBudget() {
     const kitCost = kits.reduce((s, r) => s + r.c, 0);
     bTotal += spent; kTotal += kitCost;
     const last = buys.find(r => !r.ret);
-    const b = document.createElement('button'); b.className = 'mini'; b.type = 'button';
-    b.innerHTML = `<div class="card-id">${id}</div><div class="card-nl">Budget Spent</div><div class="card-net">${fmt(spent)}</div>
+    const b = document.createElement('button'); b.className = 'mini'; b.type = 'button'; b.dataset.spent = spent; b.dataset.id = id;
+    b.innerHTML = `<div class="card-id"><span class="rank-n"></span>${id}</div><div class="card-nl">Budget Spent</div><div class="card-net">${fmt(spent)}</div>
       <div class="card-rows"><div class="card-row"><span class="cr-l">Requests</span><span class="cr-v rq">${buys.filter(r => !r.ret).length}</span></div>
       <div class="card-row"><span class="cr-l">Last</span><span class="cr-v sp">${last ? last.d : '—'}</span></div></div>`;
     b.onclick = () => openDetail(id, 'budget');
@@ -858,6 +862,8 @@ async function pollBudget() {
     k.onclick = () => openDetail(id, 'kit');
     kg.appendChild(k);
   }
+  [...bg.children].sort((x, y) => y.dataset.spent - x.dataset.spent || x.dataset.id.localeCompare(y.dataset.id))
+    .forEach((el, i) => { el.querySelector('.rank-n').textContent = '#' + (i + 1); bg.appendChild(el); });
   document.getElementById('stat-budget').textContent = fmt(bTotal);
   document.getElementById('stat-kits').textContent = fmt(kTotal);
 }
